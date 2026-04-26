@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: #0b0d10;
+  color: #e6e9ef;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0b0d10;
+}
+::-webkit-scrollbar-thumb {
+  background: #242932;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2f3541;
+}
+
+/* Utilities */
+.card {
+  @apply bg-bg-card border border-bg-border rounded-xl;
+}
+
+.card-hover {
+  @apply hover:border-bg-border/80 hover:bg-bg-hover/50 transition-colors;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-colors;
+}
+
+.btn-primary {
+  @apply btn bg-brand-600 hover:bg-brand-500 text-white;
+}
+
+.btn-secondary {
+  @apply btn bg-bg-hover hover:bg-bg-border text-gray-200 border border-bg-border;
+}
+
+.btn-ghost {
+  @apply btn hover:bg-bg-hover text-gray-300;
+}
+
+.input {
+  @apply w-full bg-bg-hover border border-bg-border rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-brand-500;
+}
+
+.label {
+  @apply block text-xs font-medium text-gray-400 mb-1;
+}
+
+.pill {
+  @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+}
+
+.pill-positive {
+  @apply pill bg-positive/10 text-positive;
+}
+
+.pill-negative {
+  @apply pill bg-negative/10 text-negative;
+}
+
+.pill-warn {
+  @apply pill bg-warning/10 text-warning;
+}
+
+.pill-neutral {
+  @apply pill bg-bg-hover text-gray-400;
+}
+
+/* Recharts dark theme overrides */
+.recharts-cartesian-axis-tick text {
+  fill: #6b7280 !important;
+  font-size: 11px;
+}
+.recharts-tooltip-wrapper {
+  outline: none !important;
+}
+
+/* Markdown-ish AI output */
+.ai-prose {
+  @apply text-sm text-gray-200 leading-relaxed;
+}
+.ai-prose strong {
+  @apply text-white font-semibold;
+}
+.ai-prose em {
+  @apply text-gray-400 not-italic text-xs;
+}

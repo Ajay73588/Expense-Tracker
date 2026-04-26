@@ -1,0 +1,166 @@
+// FinanceAI — Prisma schema
+// SQLite is used for zero-config local dev. For production, swap `sqlite` to `postgresql`.
+// Enums are stored as strings (SQLite limitation) with TS-level enums enforcing values.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          String   @id @default(cuid())
+  clerkId     String?  @unique
+  email       String   @unique
+  name        String?
+  currency    String   @default("INR")
+  privacyMode Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  assets            Asset[]
+  transactions      Transaction[]
+  liabilities       Liability[]
+  goals             Goal[]
+  budgets           Budget[]
+  snapshots         Snapshot[]
+  allocationTargets AllocationTarget[]
+  conversations     AIConversation[]
+
+  @@index([email])
+}
+
+// type: STOCK | MUTUAL_FUND | CRYPTO | REAL_ESTATE | CASH
+model Asset {
+  id            String    @id @default(cuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type          String
+  name          String
+  symbol        String?
+  quantity      Float
+  avgBuyPrice   Float
+  currentPrice  Float
+  currency      String    @default("INR")
+  account       String?
+  importSource  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  @@index([userId, type])
+  @@index([userId, deletedAt])
+}
+
+// type: INCOME | EXPENSE | TRANSFER
+model Transaction {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        String
+  amount      Float
+  category    String
+  description String?
+  date        DateTime
+  account     String?
+  tags        String    @default("[]") // JSON string array
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+
+  @@index([userId, date])
+  @@index([userId, category])
+}
+
+// type: HOME_LOAN | CAR_LOAN | PERSONAL_LOAN | CREDIT_CARD | OTHER
+model Liability {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type              String
+  name              String
+  principalAmount   Float
+  outstandingAmount Float
+  interestRate      Float
+  monthlyEMI        Float?
+  dueDate           DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+// status: ACTIVE | COMPLETED | PAUSED
+model Goal {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name            String
+  targetAmount    Float
+  currentAmount   Float    @default(0)
+  targetDate      DateTime
+  monthlyRequired Float    @default(0)
+  status          String   @default("ACTIVE")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId, status])
+}
+
+model Budget {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category     String
+  monthlyLimit Float
+  month        Int
+  year         Int
+  alertAt80    Boolean  @default(true)
+  alertAt100   Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([userId, category, month, year])
+  @@index([userId, year, month])
+}
+
+model Snapshot {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date             DateTime
+  totalAssets      Float
+  totalLiabilities Float
+  netWorth         Float
+  breakdown        String   @default("{}") // JSON string
+  createdAt        DateTime @default(now())
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
+
+// assetType: STOCK | MUTUAL_FUND | CRYPTO | REAL_ESTATE | CASH
+model AllocationTarget {
+  id            String @id @default(cuid())
+  userId        String
+  user          User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assetType     String
+  targetPercent Float
+
+  @@unique([userId, assetType])
+}
+
+// action: PORTFOLIO_ANALYSIS | SUGGEST_INVESTMENTS | REBALANCING_ADVICE | CUSTOM_CHAT | ...
+model AIConversation {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action          String
+  messages        String   @default("[]") // JSON string of messages
+  contextSnapshot String   @default("{}") // JSON string
+  createdAt       DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
