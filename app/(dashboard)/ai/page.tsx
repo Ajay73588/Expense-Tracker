@@ -18,21 +18,42 @@ const QUICK_ACTIONS = [
   { label: "Market Insights", action: "MARKET_INSIGHTS", icon: "✦", desc: "For your holdings" },
 ];
 
-// Simple markdown bold/italic renderer
+// Enhanced markdown renderer for better visual structure
 function renderMarkdown(text: string) {
   const lines = text.split("\n");
   return lines.map((line, i) => {
+    // Handle Headers (###)
+    if (line.startsWith("### ")) {
+      return (
+        <h3 key={i} className="text-brand-400 font-bold text-base mt-4 mb-2 first:mt-0">
+          {line.slice(4)}
+        </h3>
+      );
+    }
+
+    // Handle Bold and Italic
     const parts = line.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g);
     const rendered = parts.map((p, j) => {
       if (p.startsWith("**") && p.endsWith("**"))
         return <strong key={j} className="text-white font-semibold">{p.slice(2, -2)}</strong>;
       if (p.startsWith("*") && p.endsWith("*"))
         return <em key={j} className="text-gray-400 not-italic">{p.slice(1, -1)}</em>;
-      if (line.startsWith("- ") && j === 0) return <span key={j}>{"• "}{p.slice(2)}</span>;
       return <span key={j}>{p}</span>;
     });
+
+    // Handle Bullet Points
+    if (line.trim().startsWith("- ") || line.trim().startsWith("* ")) {
+      const content = line.trim().slice(2);
+      return (
+        <div key={i} className="flex gap-2 ml-1 my-0.5 items-start">
+          <span className="text-brand-500 mt-1 shrink-0">{"•"}</span>
+          <span className="text-gray-300 leading-relaxed">{rendered}</span>
+        </div>
+      );
+    }
+
     return (
-      <p key={i} className={cn("leading-relaxed", line === "" ? "my-1" : "")}>
+      <p key={i} className={cn("leading-relaxed text-gray-300", line === "" ? "h-2" : "my-1")}>
         {rendered}
       </p>
     );
