@@ -1,11 +1,5 @@
 import { getCurrentUserId } from "@/lib/auth";
-import { NetWorthService } from "@/services/networth.service";
-import { TransactionService } from "@/services/transaction.service";
-import { BudgetService } from "@/services/budget.service";
-import { PortfolioService } from "@/services/portfolio.service";
-import { HealthScoreService } from "@/services/healthscore.service";
-import { GoalService } from "@/services/goal.service";
-import { InsightsService } from "@/services/insights.service";
+import { DashboardService } from "@/services/dashboard.service";
 import { StatCard, Card, CardHeader } from "@/components/cards/Card";
 import { NetWorthChart, IncomeExpenseChart, AllocationPie, HealthScoreRadial } from "@/components/charts/Charts";
 import { formatINR, formatPercent } from "@/utils/format";
@@ -15,18 +9,17 @@ export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const userId = await getCurrentUserId();
-  const [netWorth, monthly, budgets, allocation, healthScore, goals, insights, portfolio, currentMonth] =
-    await Promise.all([
-      NetWorthService.getCurrent(userId),
-      TransactionService.summarizeByMonth(userId, 6),
-      BudgetService.getUsage(userId),
-      PortfolioService.getAllocation(userId),
-      HealthScoreService.compute(userId),
-      GoalService.getAllWithProgress(userId),
-      InsightsService.getLatest(userId),
-      PortfolioService.getPortfolioSummary(userId),
-      TransactionService.currentMonthTotals(userId),
-    ]);
+  const {
+    netWorth,
+    monthly,
+    budgets,
+    allocation,
+    healthScore,
+    goals,
+    insights,
+    portfolio,
+    currentMonth,
+  } = await DashboardService.getAggregatedData(userId);
 
   const nwChange =
     netWorth.history.length >= 2
@@ -84,7 +77,7 @@ export default async function DashboardPage() {
           <CardHeader title="Financial Health" subtitle={healthScore.rating.replace("_", " ")} />
           <HealthScoreRadial score={healthScore.total} />
           <div className="mt-4 space-y-1.5">
-            {Object.entries(healthScore.breakdown).map(([k, v]) => (
+            {Object.entries(healthScore.breakdown).map(([k, v]: [string, any]) => (
               <div key={k} className="flex items-center justify-between text-xs">
                 <span className="text-gray-400 capitalize">{k.replace(/([A-Z])/g, " $1").trim()}</span>
                 <span className="tabular-nums text-gray-300 font-medium">
@@ -111,7 +104,7 @@ export default async function DashboardPage() {
         <Card>
           <CardHeader title="Insights" subtitle={`${insights.length} active`} action={<Link href="/ai" className="text-xs text-brand-400 hover:text-brand-300">View all →</Link>} />
           <div className="space-y-2 max-h-[260px] overflow-y-auto">
-            {insights.slice(0, 5).map((i) => (
+            {insights.slice(0, 5).map((i: any) => (
               <div key={i.id} className="p-3 bg-bg-hover/40 rounded-lg border border-bg-border">
                 <div className="flex items-start gap-2">
                   <span
@@ -144,7 +137,7 @@ export default async function DashboardPage() {
         <Card>
           <CardHeader title="Budgets" subtitle={`${budgets.length} categories`} action={<Link href="/budget" className="text-xs text-brand-400">Manage →</Link>} />
           <div className="space-y-3">
-            {budgets.slice(0, 5).map((b) => (
+            {budgets.slice(0, 5).map((b: any) => (
               <div key={b.id}>
                 <div className="flex items-center justify-between text-sm mb-1">
                   <span className="text-gray-300">{b.category}</span>
@@ -178,9 +171,9 @@ export default async function DashboardPage() {
         </Card>
 
         <Card>
-          <CardHeader title="Goals" subtitle={`${goals.filter((g) => g.status === "ACTIVE").length} active`} action={<Link href="/goals" className="text-xs text-brand-400">Manage →</Link>} />
+          <CardHeader title="Goals" subtitle={`${goals.filter((g: any) => g.status === "ACTIVE").length} active`} action={<Link href="/goals" className="text-xs text-brand-400">Manage →</Link>} />
           <div className="space-y-3">
-            {goals.slice(0, 4).map((g) => (
+            {goals.slice(0, 4).map((g: any) => (
               <div key={g.id}>
                 <div className="flex items-center justify-between text-sm mb-1">
                   <span className="text-gray-300 truncate">{g.name}</span>

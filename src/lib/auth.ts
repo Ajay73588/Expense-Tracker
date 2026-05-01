@@ -1,20 +1,52 @@
-import { prisma } from "./prisma";
+import { auth, currentUser } from "@clerk/nextjs/server";
+import { useFirebase, getCollection, createDoc } from "./firebase";
 
-/**
- * Demo-mode auth. In production this would verify a Clerk session and return
- * the user bound to that clerkId. For local/demo runs we always return the seeded
- * demo user so the app is usable out of the box without auth setup.
- *
- * TODO (production): replace with Clerk `auth()` from `@clerk/nextjs/server`,
- * and throw `UnauthorizedError` when no session is present.
- */
 export async function getCurrentUser() {
-  const user = await prisma.user.findFirst({ where: { email: "demo@financeai.app" } });
-  if (!user) {
-    throw new Error(
-      "Demo user not found. Run `npm run setup` to initialize the database and seed data."
-    );
+  const { userId: clerkId } = await auth();
+
+  if (!clerkId) {
+    throw new Error("Unauthorized");
   }
+
+  const clerkUser = await currentUser();
+  if (!clerkUser) {
+    throw new Error("Clerk user not found");
+  }
+
+  const email = clerkUser.emailAddresses[0]?.emailAddress || `${clerkId}@financeai.app`;
+  const name = `${clerkUser.firstName || ""} ${clerkUser.lastName || ""}`.trim() || "User";
+
+  // ─── FIRESTORE PATH ────────────────────────────────────────────────────────
+  if (useFirebase()) {
+    const db = await getCollection("users");
+    const snapshot = await db.where("clerkId", "==", clerkId).limit(1).get();
+
+    if (!snapshot.empty) {
+      const doc = snapshot.docs[0];
+      return { id: doc.id, ...doc.data() } as any;
+    }
+
+    // Create new user in Firestore
+    const newUser = await createDoc("users", {
+      clerkId,
+      email,
+      name,
+    });
+    return newUser;
+  }
+
+  // ─── PRISMA PATH (Fallback) ────────────────────────────────────────────────
+  const { prisma } = await import("./prisma");
+  const user = await prisma.user.upsert({
+    where: { clerkId },
+    update: {},
+    create: {
+      clerkId,
+      email,
+      name,
+    },
+  });
+
   return user;
 }
 

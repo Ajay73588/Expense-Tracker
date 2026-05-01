@@ -1,4 +1,3 @@
-import { prisma } from "../../lib/prisma";
 import { createLogger } from "../../lib/logger";
 import { NetWorthService } from "../networth.service";
 import { PortfolioService } from "../portfolio.service";
@@ -8,9 +7,13 @@ import { HealthScoreService } from "../healthscore.service";
 import { AssetService } from "../asset.service";
 import { PromptBuilder, type FinancialContext } from "./prompt-builder.service";
 import { MinimaxClient } from "./minimax-client";
-import type { AIAction } from "../../types";
+import type { AIAction, PortfolioAllocation } from "../../types";
+import { getCollection, createDoc } from "../../lib/firebase";
 
 const log = createLogger("AIAdvisoryService");
+const USE_FIREBASE = process.env.USE_FIREBASE === "true";
+const COLLECTION = "aiConversations";
+const QUERY_LIMIT = 50;
 
 /** Build the full financial context used by every AI action. */
 async function buildContext(userId: string): Promise<FinancialContext> {
@@ -32,35 +35,29 @@ async function buildContext(userId: string): Promise<FinancialContext> {
   return {
     netWorth: {
       total: netWorth.netWorth,
-      assets: netWorth.totalAssets,
-      liabilities: netWorth.totalLiabilities,
     },
     portfolio: {
-      allocation: alloc.map((a) => ({
+      allocation: alloc.map((a: PortfolioAllocation) => ({
         assetType: a.assetType,
-        value: a.value,
         percent: a.percent,
+        value: a.value,
       })),
       topHoldings,
       riskScore: risk,
     },
     cashFlow: {
+      savingsRate: monthly.income > 0 ? ((monthly.income - monthly.expense) / monthly.income) * 100 : 0,
       income: monthly.income,
       expenses: monthly.expense,
-      savingsRate: monthly.income > 0 ? ((monthly.income - monthly.expense) / monthly.income) * 100 : 0,
     },
-    goals: goals.map((g) => ({
+    goals: goals.map((g: any) => ({
       name: g.name,
-      target: g.targetAmount,
-      current: g.currentAmount,
       progress: g.progress,
-      deadline: g.targetDate.toISOString().slice(0, 10),
+      target: g.targetAmount,
+      deadline: new Date(g.targetDate).toISOString().slice(0, 10),
     })),
     healthScore: {
       total: health.total,
-      breakdown: Object.fromEntries(
-        Object.entries(health.breakdown).map(([k, v]) => [k, v.score])
-      ),
     },
   };
 }
@@ -89,7 +86,7 @@ function fallbackPortfolioAnalysis(ctx: FinancialContext): string {
   if (risks.length === 0) risks.push("No immediate red flags, but review quarterly.");
 
   if (cashPct > 20)
-    recs.push(`Move ₹${Math.round(ctx.netWorth.assets * 0.1).toLocaleString("en-IN")} from cash into a liquid/short-duration debt fund.`);
+    recs.push(`Move ₹${Math.round(ctx.netWorth.total * 0.1).toLocaleString("en-IN")} from cash into a liquid/short-duration debt fund.`);
   if (cryptoPct > 10)
     recs.push(`Trim crypto exposure back to 5-10% over the next 2-3 months.`);
   if (ctx.goals.some((g) => g.progress < 50))
@@ -235,10 +232,15 @@ export const AIAdvisoryService = {
     opts: { message?: string; history?: { role: "user" | "assistant"; content: string }[] } = {}
   ) {
     const context = await buildContext(userId);
-    const prompt = PromptBuilder.build(action, context, opts.message);
+    const generatedMessages = PromptBuilder.build(action, context, opts.message);
     const start = Date.now();
 
-    let response = await MinimaxClient.complete(prompt);
+    // Include history if present, skipping the system/context messages which we just generated
+    const fullPrompt = opts.history && opts.history.length > 0 
+      ? [generatedMessages[0], ...opts.history, ...generatedMessages.slice(1)]
+      : generatedMessages;
+
+    let response = await MinimaxClient.complete(fullPrompt);
     let source: "ai" | "fallback" = "ai";
     if (!response) {
       response = fallbackFor(action, context, opts.message);
@@ -256,25 +258,86 @@ export const AIAdvisoryService = {
       { role: "assistant" as const, content: response },
     ];
 
-    await prisma.aIConversation.create({
-      data: {
+    if (USE_FIREBASE) {
+      await createDoc(COLLECTION, {
         userId,
         action,
         messages: JSON.stringify(messages),
         contextSnapshot: JSON.stringify(context),
-      },
-    });
+        createdAt: new Date()
+      });
+    } else {
+      const { prisma } = await import("../../lib/prisma");
+      await prisma.aIConversation.create({
+        data: {
+          userId,
+          action,
+          messages: JSON.stringify(messages),
+          contextSnapshot: JSON.stringify(context),
+        },
+      });
+    }
 
     return { response, source, durationMs };
   },
 
   async getHistory(userId: string, limit = 20) {
-    const rows = await prisma.aIConversation.findMany({
-      where: { userId },
-      orderBy: { createdAt: "desc" },
-      take: limit,
-    });
-    return rows.map((r) => ({
+    let rows: any[] = [];
+    if (USE_FIREBASE) {
+      try {
+        // Single where(userId) + orderBy(createdAt) requires a 2-field composite index.
+        // Wrapped in try/catch — falls back to unordered fetch + JS sort if index is missing.
+        const db = getCollection(COLLECTION);
+        let snapshot: FirebaseFirestore.QuerySnapshot;
+        try {
+          snapshot = await db
+            .where("userId", "==", userId)
+            .orderBy("createdAt", "desc")
+            .limit(limit)
+            .get();
+        } catch (indexErr: any) {
+          // Index not yet created — fall back to unordered fetch, sort in JS
+          log.warn("ai.getHistory.firebase.index-missing", {
+            userId,
+            error: indexErr?.message ?? String(indexErr),
+            fallback: "fetching without orderBy, sorting in JS",
+          });
+          snapshot = await db
+            .where("userId", "==", userId)
+            .limit(QUERY_LIMIT)
+            .get();
+        }
+
+        rows = snapshot.docs
+          .map(doc => ({
+            id: doc.id,
+            ...doc.data(),
+            createdAt: doc.data().createdAt?.toDate
+              ? doc.data().createdAt.toDate()
+              : new Date(doc.data().createdAt),
+          }))
+          .sort((a: any, b: any) => b.createdAt.getTime() - a.createdAt.getTime())
+          .slice(0, limit);
+
+        log.info("ai.getHistory.firebase", { userId, count: rows.length });
+      } catch (error: any) {
+        log.error("ai.getHistory.firebase.failed", {
+          userId,
+          error: error?.message ?? String(error),
+          fallback: "returning empty history",
+        });
+        return [];
+      }
+    } else {
+      const { prisma } = await import("../../lib/prisma");
+      rows = await prisma.aIConversation.findMany({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      });
+    }
+
+    return rows.map((r: any) => ({
       id: r.id,
       action: r.action,
       createdAt: r.createdAt,

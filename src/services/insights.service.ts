@@ -1,4 +1,3 @@
-import { prisma } from "../lib/prisma";
 import { BudgetService } from "./budget.service";
 import { PortfolioService } from "./portfolio.service";
 import { GoalService } from "./goal.service";

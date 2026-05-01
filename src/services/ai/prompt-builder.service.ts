@@ -1,15 +1,15 @@
 import type { AIAction } from "../../types";
 
 export interface FinancialContext {
-  netWorth: { total: number; assets: number; liabilities: number };
+  netWorth: { total: number }; // Only keep total to reduce tokens
   portfolio: {
-    allocation: { assetType: string; value: number; percent: number }[];
-    topHoldings: { name: string; value: number; pnlPercent: number }[];
+    allocation: { assetType: string; percent: number; value: number }[];
+    topHoldings: { name: string; pnlPercent: number }[];
     riskScore: number;
   };
-  cashFlow: { income: number; expenses: number; savingsRate: number };
-  goals: { name: string; target: number; current: number; progress: number; deadline: string }[];
-  healthScore: { total: number; breakdown: Record<string, number> };
+  cashFlow: { savingsRate: number; income: number; expenses: number }; // Just the rate + totals
+  goals: { name: string; progress: number; target: number; deadline: string }[];
+  healthScore: { total: number }; // Overall score only
 }
 
 const SYSTEM_ROLE = `You are a SEBI-registered personal finance advisor AI for Indian investors.
@@ -40,20 +40,26 @@ const ACTION_INSTRUCTIONS: Record<AIAction, string> = {
 };
 
 export const PromptBuilder = {
-  build(action: AIAction, context: FinancialContext, userMessage?: string): string {
-    const blocks = [
-      "## SYSTEM ROLE",
-      SYSTEM_ROLE,
-      "",
-      "## FINANCIAL CONTEXT",
-      JSON.stringify(context, null, 2),
-      "",
-      "## TASK",
-      ACTION_INSTRUCTIONS[action],
-    ];
+  build(action: AIAction, context: FinancialContext, userMessage?: string): { role: string; content: string }[] {
+    const messages = [];
+    
+    messages.push({
+      role: "system",
+      content: SYSTEM_ROLE
+    });
+
+    messages.push({
+      role: "user",
+      content: `## FINANCIAL CONTEXT\n${JSON.stringify(context)}\n\n## TASK\n${ACTION_INSTRUCTIONS[action]}`
+    });
+
     if (userMessage) {
-      blocks.push("", "## USER MESSAGE", userMessage);
+      messages.push({
+        role: "user",
+        content: `## USER MESSAGE\n${userMessage}`
+      });
     }
-    return blocks.join("\n");
+
+    return messages;
   },
 };

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { UserButton, useUser } from "@clerk/nextjs";
 import { cn } from "@/utils/cn";
 
 const nav = [
@@ -16,6 +17,8 @@ const nav = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { user, isLoaded } = useUser();
+
   return (
     <aside className="hidden lg:flex fixed left-0 top-0 h-screen w-64 bg-bg-card border-r border-bg-border flex-col">
       <div className="px-6 py-5 border-b border-bg-border">
@@ -51,17 +54,14 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="p-4 border-t border-bg-border">
-        <div className="text-xs text-gray-500 mb-2">Demo mode — seeded data</div>
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-bg-hover flex items-center justify-center text-xs font-semibold">
-            DI
-          </div>
+      <div className="p-4 border-t border-bg-border flex items-center gap-3">
+        <UserButton />
+        {isLoaded && user && (
           <div className="flex-1 min-w-0">
-            <div className="text-xs font-medium text-gray-200 truncate">Demo Investor</div>
-            <div className="text-[10px] text-gray-500 truncate">demo@financeai.app</div>
+            <div className="text-sm font-medium text-gray-200 truncate">{user.fullName || "User"}</div>
+            <div className="text-xs text-gray-500 truncate">{user.primaryEmailAddress?.emailAddress}</div>
           </div>
-        </div>
+        )}
       </div>
     </aside>
   );

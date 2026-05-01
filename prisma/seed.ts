@@ -1,5 +1,4 @@
 import { PrismaClient } from "@prisma/client";
-
 const prisma = new PrismaClient();
 
 /**
@@ -260,8 +259,8 @@ async function main() {
   // ---------- Snapshots (last 90 days) ----------
   const liveAssets = await prisma.asset.findMany({ where: { userId: user.id } });
   const liveLiabs = await prisma.liability.findMany({ where: { userId: user.id } });
-  const currentAssetValue = liveAssets.reduce((s, a) => s + a.quantity * a.currentPrice, 0);
-  const currentLiabValue = liveLiabs.reduce((s, l) => s + l.outstandingAmount, 0);
+  const currentAssetValue = liveAssets.reduce((s: number, a: { quantity: number; currentPrice: number }) => s + a.quantity * a.currentPrice, 0);
+  const currentLiabValue = liveLiabs.reduce((s: number, l: { outstandingAmount: number }) => s + l.outstandingAmount, 0);
   const currentNetWorth = currentAssetValue - currentLiabValue;
 
   // Back-compute a plausible upward-trending history ending at today's net worth

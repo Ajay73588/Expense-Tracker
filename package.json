@@ -14,8 +14,11 @@
     "setup": "prisma db push && npm run db:seed"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.2.8",
     "@prisma/client": "^5.22.0",
+    "@prisma/extension-accelerate": "^3.0.1",
     "clsx": "^2.1.1",
+    "firebase-admin": "^13.8.0",
     "next": "14.2.15",
     "papaparse": "^5.4.1",
     "react": "^18.3.1",
