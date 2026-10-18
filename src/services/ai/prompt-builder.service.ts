@@ -10,9 +10,15 @@ export interface FinancialContext {
   cashFlow: { savingsRate: number; income: number; expenses: number }; // Just the rate + totals
   goals: { name: string; progress: number; target: number; deadline: string }[];
   healthScore: { total: number }; // Overall score only
+  rebalancePlan?: {
+    mode: string;
+    items: { assetType: string; currentPct: number; targetPct: number; driftPct: number; action: string; suggestedAmount: number }[];
+    residualCash?: number;
+    warnings?: string[];
+  };
 }
 
-const SYSTEM_ROLE = `You are a professional SEBI-registered personal finance advisor AI for Indian investors.
+export const SYSTEM_ROLE = `You are a professional SEBI-registered personal finance advisor AI for Indian investors.
 Guidelines:
 - Base every recommendation on the user's actual data (provided below).
 - Never guarantee returns. Use "historically", "typically", "consider".
@@ -25,7 +31,7 @@ Guidelines:
 - Be concrete: give numbers, percentages, and specific action items.
 - Keep responses concise but thorough, between 200-500 words.`;
 
-const ACTION_INSTRUCTIONS: Record<AIAction, string> = {
+export const ACTION_INSTRUCTIONS: Record<AIAction, string> = {
   PORTFOLIO_ANALYSIS: `Analyze the portfolio's strengths, risks, and concentration. Format your response with these sections:
 ### Portfolio Strengths
 (3 points)

@@ -1,5 +1,6 @@
 import { createLogger } from "../lib/logger";
 import { getCollection, createDoc, updateDoc, deleteDoc } from "../lib/firebase";
+import { NotFoundError } from "../lib/errors";
 
 const log = createLogger("BudgetService");
 const USE_FIREBASE = process.env.USE_FIREBASE === "true";
@@ -41,10 +42,14 @@ export const BudgetService = {
     }
 
     const { prisma } = await import("../lib/prisma");
-    return prisma.budget.findMany({
+    const rows = await prisma.budget.findMany({
       where: { userId, month: m, year: y },
       orderBy: { category: "asc" },
     });
+    return rows.map((r: any) => ({
+      ...r,
+      monthlyLimit: r.monthlyLimit?.toNumber ? r.monthlyLimit.toNumber() : Number(r.monthlyLimit),
+    }));
   },
 
   async upsert(userId: string, input: BudgetInput) {
@@ -93,14 +98,19 @@ export const BudgetService = {
   async remove(userId: string, id: string) {
     if (USE_FIREBASE) {
       try {
+        const db = getCollection(COLLECTION);
+        const doc = await db.doc(id).get();
+        if (!doc.exists || doc.data()?.userId !== userId) throw new NotFoundError("Budget");
         await deleteDoc(COLLECTION, id);
       } catch (error: any) {
+        if (error instanceof NotFoundError) throw error;
         log.error("budget.remove.firebase.failed", { userId, id, error: error?.message ?? String(error) });
         throw error;
       }
     } else {
       const { prisma } = await import("../lib/prisma");
-      await prisma.budget.deleteMany({ where: { id, userId } });
+      const { count } = await prisma.budget.deleteMany({ where: { id, userId } });
+      if (count === 0) throw new NotFoundError("Budget");
     }
   },
 
@@ -159,18 +169,28 @@ export const BudgetService = {
     }
 
     const spendByCategory = new Map<string, number>();
-    for (const t of txs) spendByCategory.set(t.category, (spendByCategory.get(t.category) ?? 0) + t.amount);
+    for (const t of txs) {
+      const amt = t.amount?.toNumber ? t.amount.toNumber() : Number(t.amount);
+      spendByCategory.set(t.category, (spendByCategory.get(t.category) ?? 0) + amt);
+    }
 
     return budgets.map((b: any) => {
+      const limit = b.monthlyLimit?.toNumber ? b.monthlyLimit.toNumber() : Number(b.monthlyLimit);
       const spent = spendByCategory.get(b.category) ?? 0;
-      const used = b.monthlyLimit > 0 ? (spent / b.monthlyLimit) * 100 : 0;
+      const used = limit > 0 ? (spent / limit) * 100 : 0;
       let status: "OK" | "WARN" | "EXCEEDED" = "OK";
-      if (spent >= b.monthlyLimit) status = "EXCEEDED";
+      if (spent >= limit) status = "EXCEEDED";
       else if (used >= 80) status = "WARN";
       return {
-        id: b.id, category: b.category, monthlyLimit: b.monthlyLimit,
-        spent, remaining: Math.max(0, b.monthlyLimit - spent),
-        usedPercent: used, status, month: b.month, year: b.year,
+        id: b.id,
+        category: b.category,
+        monthlyLimit: limit,
+        spent,
+        remaining: Math.max(0, limit - spent),
+        usedPercent: used,
+        status,
+        month: b.month,
+        year: b.year,
       };
     });
   },

@@ -1,6 +1,7 @@
 import type { GoalStatus } from "../types";
 import { getCollection, createDoc, updateDoc, deleteDoc } from "../lib/firebase";
 import { createLogger } from "../lib/logger";
+import { NotFoundError } from "../lib/errors";
 
 const log = createLogger("GoalService");
 const USE_FIREBASE = process.env.USE_FIREBASE === "true";
@@ -18,7 +19,7 @@ export interface GoalInput {
 function monthsBetween(from: Date, to: Date): number {
   const months =
     (to.getFullYear() - from.getFullYear()) * 12 + (to.getMonth() - from.getMonth());
-  return Math.max(1, months);
+  return Math.max(0, months);
 }
 
 export const GoalService = {
@@ -45,14 +46,21 @@ export const GoalService = {
       }
     }
     const { prisma } = await import("../lib/prisma");
-    return prisma.goal.findMany({ where: { userId }, orderBy: { targetDate: "asc" } });
+    const rows = await prisma.goal.findMany({ where: { userId }, orderBy: { targetDate: "asc" } });
+    return rows.map((r: any) => ({
+      ...r,
+      targetAmount: r.targetAmount?.toNumber ? r.targetAmount.toNumber() : Number(r.targetAmount),
+      currentAmount: r.currentAmount?.toNumber ? r.currentAmount.toNumber() : Number(r.currentAmount),
+      monthlyRequired: r.monthlyRequired?.toNumber ? r.monthlyRequired.toNumber() : Number(r.monthlyRequired),
+    }));
   },
 
   async create(userId: string, input: GoalInput) {
-    const targetDate = new Date(input.targetDate);
     const current = input.currentAmount ?? 0;
+    const targetDate = new Date(input.targetDate);
     const months = monthsBetween(new Date(), targetDate);
-    const monthlyRequired = Math.max(0, (input.targetAmount - current) / months);
+    const gap = Math.max(0, input.targetAmount - current);
+    const monthlyRequired = months <= 0 ? gap : Math.round((gap / months) * 100) / 100;
 
     if (USE_FIREBASE) {
       try {
@@ -71,9 +79,15 @@ export const GoalService = {
     }
 
     const { prisma } = await import("../lib/prisma");
-    return prisma.goal.create({
+    const created = await prisma.goal.create({
       data: { userId, name: input.name, targetAmount: input.targetAmount, currentAmount: current, targetDate, monthlyRequired, status: input.status ?? "ACTIVE" },
     });
+    return {
+      ...created,
+      targetAmount: created.targetAmount.toNumber(),
+      currentAmount: created.currentAmount.toNumber(),
+      monthlyRequired: created.monthlyRequired.toNumber(),
+    };
   },
 
   async update(userId: string, id: string, patch: Partial<GoalInput>) {
@@ -93,12 +107,13 @@ export const GoalService = {
       existing = await prisma.goal.findFirst({ where: { id, userId } });
     }
 
-    if (!existing) return null;
-    const targetDate = patch.targetDate ? new Date(patch.targetDate) : existing.targetDate;
-    const targetAmount = patch.targetAmount ?? existing.targetAmount;
-    const currentAmount = patch.currentAmount ?? existing.currentAmount;
+    if (!existing) throw new NotFoundError("Goal");
+    const targetDate = patch.targetDate ? new Date(patch.targetDate) : (existing.targetDate?.toDate ? existing.targetDate.toDate() : new Date(existing.targetDate));
+    const targetAmount = patch.targetAmount !== undefined ? patch.targetAmount : (existing.targetAmount?.toNumber ? existing.targetAmount.toNumber() : Number(existing.targetAmount ?? 0));
+    const currentAmount = patch.currentAmount !== undefined ? patch.currentAmount : (existing.currentAmount?.toNumber ? existing.currentAmount.toNumber() : Number(existing.currentAmount ?? 0));
     const months = monthsBetween(new Date(), targetDate);
-    const monthlyRequired = Math.max(0, (targetAmount - currentAmount) / months);
+    const gap = Math.max(0, targetAmount - currentAmount);
+    const monthlyRequired = months <= 0 ? gap : Math.round((gap / months) * 100) / 100;
 
     if (USE_FIREBASE) {
       try {
@@ -118,7 +133,7 @@ export const GoalService = {
     }
 
     const { prisma } = await import("../lib/prisma");
-    return prisma.goal.update({
+    const updated = await prisma.goal.update({
       where: { id },
       data: {
         ...(patch.name !== undefined && { name: patch.name }),
@@ -126,19 +141,30 @@ export const GoalService = {
         ...(patch.status !== undefined && { status: patch.status }),
       },
     });
+    return {
+      ...updated,
+      targetAmount: updated.targetAmount.toNumber(),
+      currentAmount: updated.currentAmount.toNumber(),
+      monthlyRequired: updated.monthlyRequired.toNumber(),
+    };
   },
 
   async remove(userId: string, id: string) {
     if (USE_FIREBASE) {
       try {
+        const db = getCollection(COLLECTION);
+        const doc = await db.doc(id).get();
+        if (!doc.exists || doc.data()?.userId !== userId) throw new NotFoundError("Goal");
         await deleteDoc(COLLECTION, id);
       } catch (error: any) {
+        if (error instanceof NotFoundError) throw error;
         log.error("goal.remove.firebase.failed", { userId, id, error: error?.message ?? String(error) });
         throw error;
       }
     } else {
       const { prisma } = await import("../lib/prisma");
-      await prisma.goal.deleteMany({ where: { id, userId } });
+      const { count } = await prisma.goal.deleteMany({ where: { id, userId } });
+      if (count === 0) throw new NotFoundError("Goal");
     }
   },
 
@@ -168,13 +194,18 @@ export const GoalService = {
     }
 
     return goals.map((g: any) => {
-      const progress = g.targetAmount > 0 ? (g.currentAmount / g.targetAmount) * 100 : 0;
+      const tgt = g.targetAmount?.toNumber ? g.targetAmount.toNumber() : Number(g.targetAmount);
+      const cur = g.currentAmount?.toNumber ? g.currentAmount.toNumber() : Number(g.currentAmount);
+      const progress = tgt > 0 ? (cur / tgt) * 100 : 0;
       const months = monthsBetween(new Date(), g.targetDate);
       return {
         ...g,
+        targetAmount: tgt,
+        currentAmount: cur,
+        monthlyRequired: g.monthlyRequired?.toNumber ? g.monthlyRequired.toNumber() : Number(g.monthlyRequired),
         progress: Math.min(100, progress),
         monthsRemaining: months,
-        onTrack: progress >= 100 || g.currentAmount / g.targetAmount >= 1 - months / 120,
+        onTrack: progress >= 100 || (months > 0 && cur / tgt >= 1 - months / 120),
       };
     });
   },
@@ -203,7 +234,11 @@ export const GoalService = {
 
     if (goals.length === 0) return 0;
     const sum = goals.reduce(
-      (acc: number, g: any) => acc + (g.targetAmount > 0 ? Math.min(1, g.currentAmount / g.targetAmount) : 0),
+      (acc: number, g: any) => {
+        const tgt = g.targetAmount?.toNumber ? g.targetAmount.toNumber() : Number(g.targetAmount);
+        const cur = g.currentAmount?.toNumber ? g.currentAmount.toNumber() : Number(g.currentAmount);
+        return acc + (tgt > 0 ? Math.min(1, cur / tgt) : 0);
+      },
       0
     );
     return sum / goals.length;

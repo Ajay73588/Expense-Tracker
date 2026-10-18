@@ -24,7 +24,8 @@
       "@/types/*": ["./src/types/*"],
       "@/utils/*": ["./src/utils/*"],
       "@/utils": ["./src/utils/index.ts"],
-      "@/adapters/*": ["./src/adapters/*"]
+      "@/adapters/*": ["./src/adapters/*"],
+      "@/context/*": ["./src/context/*"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],

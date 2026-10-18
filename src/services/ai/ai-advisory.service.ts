@@ -6,7 +6,8 @@ import { GoalService } from "../goal.service";
 import { HealthScoreService } from "../healthscore.service";
 import { AssetService } from "../asset.service";
 import { PromptBuilder, type FinancialContext } from "./prompt-builder.service";
-import { MinimaxClient } from "./minimax-client";
+import { NvidiaClient } from "./nvidia-client";
+import { GeminiClient } from "./gemini-client";
 import type { AIAction, PortfolioAllocation } from "../../types";
 import { getCollection, createDoc } from "../../lib/firebase";
 
@@ -17,7 +18,7 @@ const QUERY_LIMIT = 50;
 
 /** Build the full financial context used by every AI action. */
 async function buildContext(userId: string): Promise<FinancialContext> {
-  const [netWorth, alloc, risk, monthly, goals, health, assets] = await Promise.all([
+  const [netWorth, alloc, risk, monthly, goals, health, assets, targets] = await Promise.all([
     NetWorthService.getCurrent(userId),
     PortfolioService.getAllocation(userId),
     PortfolioService.getRiskScore(userId),
@@ -25,7 +26,36 @@ async function buildContext(userId: string): Promise<FinancialContext> {
     GoalService.getAllWithProgress(userId),
     HealthScoreService.compute(userId),
     AssetService.getPortfolioWithPL(userId),
+    PortfolioService.getAllocationTargets(userId),
   ]);
+
+  let rebalancePlanData = undefined;
+  if (targets.length > 0) {
+    try {
+      const plan = await PortfolioService.getComprehensiveRebalancePlan(
+        userId,
+        { mode: "CASH_ONLY" },
+        { assets, targets }
+      );
+      if (plan.ok) {
+        rebalancePlanData = {
+          mode: plan.mode,
+          items: plan.items.map((i) => ({
+            assetType: i.assetType,
+            currentPct: i.currentPct,
+            targetPct: i.targetPct,
+            driftPct: i.driftPct,
+            action: i.action,
+            suggestedAmount: i.suggestedAmount,
+          })),
+          residualCash: plan.residualCash,
+          warnings: plan.warnings,
+        };
+      }
+    } catch (err: any) {
+      log.warn("ai.advisor.rebalancePlanFailed", { userId, error: err?.message });
+    }
+  }
 
   const topHoldings = [...assets]
     .sort((a, b) => b.currentValue - a.currentValue)
@@ -59,6 +89,7 @@ async function buildContext(userId: string): Promise<FinancialContext> {
     healthScore: {
       total: health.total,
     },
+    rebalancePlan: rebalancePlanData,
   };
 }
 
@@ -103,7 +134,7 @@ function fallbackPortfolioAnalysis(ctx: FinancialContext): string {
     "**Recommendations**",
     ...recs.map((s) => `- ${s}`),
     "",
-    "_Note: This is a rule-based analysis. Connect a Minimax API key for full AI-driven insights._",
+    "_Note: This is a rule-based analysis. Configure NVIDIA_NIM_API_KEY for full AI-driven insights._",
   ].join("\n");
 }
 
@@ -129,6 +160,35 @@ function fallbackRebalancing(ctx: FinancialContext): string {
   const alloc = ctx.portfolio.allocation.map(
     (a) => `- ${a.assetType}: ${a.percent.toFixed(1)}% (₹${a.value.toLocaleString("en-IN")})`
   );
+
+  if (ctx.rebalancePlan && ctx.rebalancePlan.items.length > 0) {
+    const actions = ctx.rebalancePlan.items.map((i) => {
+      if (i.action === "HOLD") {
+        return `- **${i.assetType}**: HOLD (${i.currentPct.toFixed(1)}% vs target ${i.targetPct.toFixed(1)}%, drift ${i.driftPct > 0 ? "+" : ""}${i.driftPct.toFixed(1)}%)`;
+      }
+      return `- **${i.assetType}**: **${i.action}** ₹${Math.round(i.suggestedAmount).toLocaleString("en-IN")} (${i.currentPct.toFixed(1)}% vs target ${i.targetPct.toFixed(1)}%, drift ${i.driftPct > 0 ? "+" : ""}${i.driftPct.toFixed(1)}%)`;
+    });
+
+    const lines = [
+      "### Deterministic Portfolio Rebalance Plan",
+      `_Mode: ${ctx.rebalancePlan.mode === "CASH_ONLY" ? "Cash-only (no sells recommended)" : "Balanced"} (Deterministic Rule Engine)_`,
+      "",
+      "**Current Allocation & Drift:**",
+      ...actions,
+      "",
+      "**Rebalancing Guidance:**",
+      "- Target allocations are evaluated with a 5% drift threshold band.",
+      "- Suggested amounts are computed deterministically based on your portfolio value.",
+      "- Taxes (STCG/LTCG), exit loads, and lot constraints are not modeled — verify before execution.",
+    ];
+
+    if (ctx.rebalancePlan.warnings && ctx.rebalancePlan.warnings.length > 0) {
+      lines.push("", "**Notices:**", ...ctx.rebalancePlan.warnings.map((w) => `- ${w}`));
+    }
+
+    return lines.join("\n");
+  }
+
   return [
     "**Current allocation:**",
     ...alloc,
@@ -145,6 +205,7 @@ function fallbackRebalancing(ctx: FinancialContext): string {
 function fallbackRoadmap(ctx: FinancialContext): string {
   const surplus = Math.max(0, ctx.cashFlow.income - ctx.cashFlow.expenses);
   return [
+    "### 12-Month Financial Roadmap (Rule-Based)",
     `**12-month roadmap** (monthly surplus: ₹${Math.round(surplus).toLocaleString("en-IN")})`,
     "",
     "- **Months 1-3:** Build/top-up emergency fund to 6× expenses. Review all SIPs.",
@@ -152,13 +213,16 @@ function fallbackRoadmap(ctx: FinancialContext): string {
     "- **Months 7-9:** Review goal progress; redirect bonuses toward underfunded goals.",
     "- **Months 10-12:** Harvest LTCG up to ₹1L annual exemption. Rebalance toward targets.",
     "",
-    "_Timing and amounts are indicative. Adjust based on your goal deadlines and income stability._",
+    "_Timing and amounts are indicative. Rule engine fallback active (NVIDIA NIM not used)._",
   ].join("\n");
 }
 
 function fallbackMonthly(ctx: FinancialContext): string {
   const { cashFlow, netWorth, healthScore } = ctx;
   return [
+    "### Monthly Summary (Rule-Based)",
+    "_Note: Generated from recorded cash flow and current net worth. NVIDIA NIM was not used._",
+    "",
     "**This month at a glance**",
     `- Income: ₹${cashFlow.income.toLocaleString("en-IN")}`,
     `- Expenses: ₹${cashFlow.expenses.toLocaleString("en-IN")}`,
@@ -173,14 +237,14 @@ function fallbackMonthly(ctx: FinancialContext): string {
   ].join("\n");
 }
 
-function fallbackCustom(ctx: FinancialContext, userMessage: string): string {
-  const msg = userMessage.toLowerCase();
-  // Best-effort intent routing
+function fallbackCustom(ctx: FinancialContext, userMessage: string, errorCode?: string): string {
+  const msg = userMessage.toLowerCase().trim();
+  // Supported local deterministic calculations
   if (/portfolio|allocation|holding/.test(msg)) return fallbackPortfolioAnalysis(ctx);
   if (/invest|sip|where.*put/.test(msg)) return fallbackSuggestInvestments(ctx);
   if (/rebalanc/.test(msg)) return fallbackRebalancing(ctx);
-  if (/roadmap|plan|month/.test(msg)) return fallbackRoadmap(ctx);
-  if (/summary|month|report/.test(msg)) return fallbackMonthly(ctx);
+  if (/roadmap|plan/.test(msg)) return fallbackRoadmap(ctx);
+  if (/summary|month|recap|report/.test(msg)) return fallbackMonthly(ctx);
   if (/goal/.test(msg)) {
     const behind = ctx.goals.filter((g) => g.progress < 50);
     if (behind.length === 0) return "All your active goals are over 50% progress — good shape. Keep contributing monthly.";
@@ -194,19 +258,38 @@ function fallbackCustom(ctx: FinancialContext, userMessage: string): string {
   if (/health|score/.test(msg)) {
     return `Your current financial health score is **${ctx.healthScore.total}/10**. The biggest lever is usually savings rate — aim for >20% of income.`;
   }
-  // Generic
+
+  // General questions that cannot be computed locally: provide a clear status and guidance
+  const reasonText =
+    errorCode === "NOT_CONFIGURED"
+      ? "NVIDIA_NIM_API_KEY is not configured"
+      : errorCode === "AUTH_ERROR"
+      ? "NVIDIA NIM API credentials invalid or unauthorized"
+      : errorCode === "SERVICE_UNAVAILABLE"
+      ? "NVIDIA NIM service temporarily overloaded (HTTP 503)"
+      : errorCode === "RATE_LIMIT"
+      ? "NVIDIA NIM rate limit or quota exceeded"
+      : errorCode === "TIMEOUT"
+      ? "NVIDIA NIM request timed out"
+      : errorCode === "MODEL_ERROR"
+      ? "Configured NVIDIA NIM model is unavailable"
+      : errorCode === "INVALID_REQUEST"
+      ? "Invalid request parameter or payload"
+      : "AI service temporarily unavailable";
+
   return [
-    "Here's your current financial snapshot:",
-    `- Net worth: ₹${ctx.netWorth.total.toLocaleString("en-IN")}`,
-    `- Savings rate: ${ctx.cashFlow.savingsRate.toFixed(1)}%`,
-    `- Health score: ${ctx.healthScore.total}/10`,
-    `- Risk score: ${ctx.portfolio.riskScore}/10`,
+    "### AI Advisor Temporarily Unavailable",
+    `We could not generate a real-time AI response for your inquiry (${reasonText}).`,
     "",
-    "Ask me about: portfolio analysis, investment suggestions, rebalancing, goals, or a 12-month roadmap.",
+    "**What you can do:**",
+    "- Check back shortly or retry your question.",
+    "- Ask about portfolio analysis, investment suggestions, rebalancing, or goals to use local calculations.",
+    "",
+    `_Note: Fallback engine active (${errorCode ?? "UNKNOWN"}). NVIDIA NIM was not used._`,
   ].join("\n");
 }
 
-function fallbackFor(action: AIAction, ctx: FinancialContext, userMessage?: string): string {
+function fallbackFor(action: AIAction, ctx: FinancialContext, userMessage?: string, errorCode?: string): string {
   switch (action) {
     case "PORTFOLIO_ANALYSIS":
       return fallbackPortfolioAnalysis(ctx);
@@ -215,22 +298,37 @@ function fallbackFor(action: AIAction, ctx: FinancialContext, userMessage?: stri
     case "REBALANCING_ADVICE":
       return fallbackRebalancing(ctx);
     case "MARKET_INSIGHTS":
-      return "Market insights require a live news feed; in fallback mode, see Portfolio Analysis for a data-driven take on your holdings.";
+      return "Market insights require live financial intelligence; in fallback mode, see Portfolio Analysis for a data-driven take on your holdings (NVIDIA NIM bypassed).";
     case "FINANCIAL_ROADMAP":
       return fallbackRoadmap(ctx);
     case "MONTHLY_SUMMARY":
       return fallbackMonthly(ctx);
     case "CUSTOM_CHAT":
-      return fallbackCustom(ctx, userMessage ?? "");
+      return fallbackCustom(ctx, userMessage ?? "", errorCode);
   }
+}
+
+export interface AIAdvisoryResult {
+  response: string;
+  source: "ai" | "fallback";
+  durationMs: number;
+  provider: "nvidia" | "rule-engine" | "gemini" | string;
+  fallbackReason?: string;
+  model?: string;
+  retryAfterMs?: number | null;
+  isDailyQuota?: boolean;
 }
 
 export const AIAdvisoryService = {
   async runAction(
     userId: string,
     action: AIAction,
-    opts: { message?: string; history?: { role: "user" | "assistant"; content: string }[] } = {}
-  ) {
+    opts: {
+      message?: string;
+      history?: { role: "user" | "assistant"; content: string }[];
+      overrideClient?: typeof NvidiaClient;
+    } = {}
+  ): Promise<AIAdvisoryResult> {
     const context = await buildContext(userId);
     const generatedMessages = PromptBuilder.build(action, context, opts.message);
     const start = Date.now();
@@ -240,15 +338,42 @@ export const AIAdvisoryService = {
       ? [generatedMessages[0], ...opts.history, ...generatedMessages.slice(1)]
       : generatedMessages;
 
-    let response = await MinimaxClient.complete(fullPrompt);
+    let response: string;
     let source: "ai" | "fallback" = "ai";
-    if (!response) {
-      response = fallbackFor(action, context, opts.message);
+    let fallbackReason: string | undefined = undefined;
+    let modelUsed: string | undefined = undefined;
+    let retryAfterMs: number | null | undefined = undefined;
+    let isDailyQuota: boolean | undefined = undefined;
+
+    const client = opts.overrideClient ?? NvidiaClient;
+    const completion = await client.complete({
+      messages: fullPrompt,
+      feature: "advisor",
+    });
+
+    if (completion.ok) {
+      response = completion.text;
+      source = "ai";
+      modelUsed = completion.model;
+    } else {
+      response = fallbackFor(action, context, opts.message, completion.code);
       source = "fallback";
+      fallbackReason = completion.code;
+      modelUsed = undefined;
+      retryAfterMs = completion.retryAfterMs;
+      isDailyQuota = completion.code === "RATE_LIMIT";
     }
 
     const durationMs = Date.now() - start;
-    log.info("ai.action", { userId, action, source, durationMs });
+    log.info("ai.advisor.resolved", {
+      userId,
+      action,
+      source,
+      provider: source === "ai" ? "nvidia" : "rule-engine",
+      model: modelUsed || "rule-engine",
+      fallbackReason,
+      durationMs,
+    });
 
     // Persist conversation history
     const history = opts.history ?? [];
@@ -278,7 +403,16 @@ export const AIAdvisoryService = {
       });
     }
 
-    return { response, source, durationMs };
+    return {
+      response,
+      source,
+      durationMs,
+      provider: source === "ai" ? "nvidia" : "rule-engine",
+      fallbackReason,
+      model: modelUsed,
+      retryAfterMs,
+      isDailyQuota,
+    };
   },
 
   async getHistory(userId: string, limit = 20) {
@@ -344,4 +478,16 @@ export const AIAdvisoryService = {
       messages: JSON.parse(r.messages) as { role: string; content: string }[],
     }));
   },
+
+  getProviderHealth() {
+    const isNvidiaConfigured = NvidiaClient.isConfigured("advisor");
+    const isGeminiConfigured = GeminiClient.isConfigured();
+    return {
+      configured: isNvidiaConfigured || isGeminiConfigured,
+      primary: isNvidiaConfigured ? "nvidia" : isGeminiConfigured ? "gemini" : "none",
+      nvidia: isNvidiaConfigured,
+      gemini: isGeminiConfigured,
+    };
+  },
 };
+

@@ -1,6 +1,5 @@
-// FinanceAI — Prisma schema
-// SQLite is used for zero-config local dev. For production, swap `sqlite` to `postgresql`.
-// Enums are stored as strings (SQLite limitation) with TS-level enums enforcing values.
+// FinanceAI — Prisma schema (PostgreSQL)
+// Enums are stored as strings with TS-level enums enforcing values.
 
 generator client {
   provider = "prisma-client-js"
@@ -29,8 +28,33 @@ model User {
   snapshots         Snapshot[]
   allocationTargets AllocationTarget[]
   conversations     AIConversation[]
+  accounts          Account[]
 
   @@index([email])
+}
+
+// type: BANK | BROKER | CREDIT_CARD | WALLET | OTHER
+// Represents a named financial account owned by a user.
+// Transaction.account (String?) and Asset.account (String?) remain for backward compat.
+// New records should link via accountId instead; old flat-string records are kept as-is.
+model Account {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String    // e.g. "HDFC Savings", "Zerodha Demat"
+  type        String    @default("OTHER") // BANK | BROKER | CREDIT_CARD | WALLET | OTHER
+  currency    String    @default("INR")
+  isDefault   Boolean   @default(false)
+  note        String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  closedAt    DateTime? // soft-close: account closed but history preserved
+
+  transactions  Transaction[]
+  assets        Asset[]
+
+  @@unique([userId, name]) // each user's account names must be unique
+  @@index([userId, closedAt])
 }
 
 // type: STOCK | MUTUAL_FUND | CRYPTO | REAL_ESTATE | CASH
@@ -41,9 +65,9 @@ model Asset {
   type          String
   name          String
   symbol        String?
-  quantity      Float
-  avgBuyPrice   Float
-  currentPrice  Float
+  quantity      Decimal   @db.Decimal(18, 6)
+  avgBuyPrice   Decimal   @db.Decimal(19, 4)
+  currentPrice  Decimal   @db.Decimal(19, 4)
   currency      String    @default("INR")
   account       String?
   importSource  String?
@@ -51,8 +75,22 @@ model Asset {
   updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?
 
+  // ── Portfolio import (broker snapshot) fields ────────────────────────────
+  isin           String?   // stable identifier (stocks + mutual funds) when the export has one
+  exchange       String?   // NSE | BSE | US — resolved from the symbol/ISIN
+  folio          String?   // mutual-fund folio number (identity component, not displayed as PII)
+  importKey      String?   // "<broker>|<assetClass>|<account>|<identity>" — idempotent re-import key
+  priceSource    String?   // YAHOO | MFAPI | STATEMENT | COST_BASIS (COST_BASIS = no price yet)
+  priceUpdatedAt DateTime?
+
+  // ── Account FK (optional — populated when linked to an Account entity) ──
+  accountId      String?
+  accountRef     Account?  @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, importKey])
   @@index([userId, type])
   @@index([userId, deletedAt])
+  @@index([userId, accountId])
 }
 
 // type: INCOME | EXPENSE | TRANSFER
@@ -61,17 +99,25 @@ model Transaction {
   userId      String
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   type        String
-  amount      Float
+  amount      Decimal   @db.Decimal(19, 4)
   category    String
   description String?
   date        DateTime
-  account     String?
+  account     String?   // flat string for backward compat / import-sourced records
   tags        String    @default("[]") // JSON string array
   createdAt   DateTime  @default(now())
   deletedAt   DateTime?
 
-  @@index([userId, date])
-  @@index([userId, category])
+  // ── Account FK (optional — populated when linked to an Account entity) ──
+  accountId   String?
+  accountRef  Account?  @relation(fields: [accountId], references: [id], onDelete: SetNull)
+
+  // ── Transfer identity (LEDGER-004) ──
+  transferGroupId String?
+
+  @@index([userId, date, deletedAt])
+  @@index([userId, category, deletedAt])
+  @@index([userId, accountId])
 }
 
 // type: HOME_LOAN | CAR_LOAN | PERSONAL_LOAN | CREDIT_CARD | OTHER
@@ -81,10 +127,10 @@ model Liability {
   user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   type              String
   name              String
-  principalAmount   Float
-  outstandingAmount Float
-  interestRate      Float
-  monthlyEMI        Float?
+  principalAmount   Decimal   @db.Decimal(19, 4)
+  outstandingAmount Decimal   @db.Decimal(19, 4)
+  interestRate      Float     // Keep interestRate as Float since it's a percentage, or make it Decimal? The plan didn't mention interestRate. Let's keep Float.
+  monthlyEMI        Decimal?  @db.Decimal(19, 4)
   dueDate           DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
@@ -98,10 +144,10 @@ model Goal {
   userId          String
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   name            String
-  targetAmount    Float
-  currentAmount   Float    @default(0)
+  targetAmount    Decimal  @db.Decimal(19, 4)
+  currentAmount   Decimal  @db.Decimal(19, 4) @default(0)
   targetDate      DateTime
-  monthlyRequired Float    @default(0)
+  monthlyRequired Decimal  @db.Decimal(19, 4) @default(0)
   status          String   @default("ACTIVE")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -114,7 +160,7 @@ model Budget {
   userId       String
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   category     String
-  monthlyLimit Float
+  monthlyLimit Decimal  @db.Decimal(19, 4)
   month        Int
   year         Int
   alertAt80    Boolean  @default(true)
@@ -131,9 +177,9 @@ model Snapshot {
   userId           String
   user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   date             DateTime
-  totalAssets      Float
-  totalLiabilities Float
-  netWorth         Float
+  totalAssets      Decimal  @db.Decimal(19, 4)
+  totalLiabilities Decimal  @db.Decimal(19, 4)
+  netWorth         Decimal  @db.Decimal(19, 4)
   breakdown        String   @default("{}") // JSON string
   createdAt        DateTime @default(now())
 

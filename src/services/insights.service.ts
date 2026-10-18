@@ -10,12 +10,20 @@ import type { Insight } from "../types";
  * fallback; AI enrichment layers on top in AIAdvisoryService.
  */
 export const InsightsService = {
-  async generate(userId: string): Promise<Insight[]> {
+  async generate(
+    userId: string,
+    preloaded?: {
+      budgets?: any[];
+      rebalance?: any[];
+      goals?: any[];
+      health?: any;
+    }
+  ): Promise<Insight[]> {
     const [budgets, rebalance, goals, health] = await Promise.all([
-      BudgetService.getUsage(userId),
-      PortfolioService.getRebalancePlan(userId),
-      GoalService.getAllWithProgress(userId),
-      HealthScoreService.compute(userId),
+      preloaded?.budgets ?? BudgetService.getUsage(userId),
+      preloaded?.rebalance ?? PortfolioService.getRebalancePlan(userId),
+      preloaded?.goals ?? GoalService.getAllWithProgress(userId),
+      preloaded?.health ?? HealthScoreService.compute(userId),
     ]);
 
     const insights: Insight[] = [];
@@ -102,7 +110,15 @@ export const InsightsService = {
     return insights.slice(0, 10);
   },
 
-  async getLatest(userId: string) {
-    return InsightsService.generate(userId);
+  async getLatest(
+    userId: string,
+    preloaded?: {
+      budgets?: any[];
+      rebalance?: any[];
+      goals?: any[];
+      health?: any;
+    }
+  ) {
+    return InsightsService.generate(userId, preloaded);
   },
 };

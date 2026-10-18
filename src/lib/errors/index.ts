@@ -22,3 +22,22 @@ export class NotFoundError extends AppError {
     super(`${resource} not found`, "NOT_FOUND", 404);
   }
 }
+
+export class ForbiddenError extends AppError {
+  constructor(message = "Forbidden") {
+    super(message, "FORBIDDEN", 403);
+  }
+}
+
+export class ConflictError extends AppError {
+  constructor(message: string, code = "CONFLICT") {
+    super(message, code, 409);
+  }
+}
+
+export class BadRequestError extends AppError {
+  constructor(message: string, code = "BAD_REQUEST") {
+    super(message, code, 400);
+  }
+}
+

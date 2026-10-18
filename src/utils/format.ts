@@ -48,3 +48,13 @@ export function classifyAssetType(symbol: string | null, rawType?: string): stri
   if (/^[A-Z]+$/.test(s) && s.length <= 10) return "STOCK";
   return "MUTUAL_FUND";
 }
+
+/** Money in the holding's own currency (USD holdings are shown in $, never silently as ₹). */
+export function formatCurrency(value: number, currency: string, maxFractionDigits = 2): string {
+  if (!Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat(currency === "INR" ? "en-IN" : "en-US", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: maxFractionDigits,
+  }).format(value);
+}

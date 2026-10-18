@@ -13,11 +13,22 @@ const QUERY_LIMIT = 200;
  * Each dimension returns a 0-2 sub-score per the architecture doc.
  */
 export const HealthScoreService = {
-  async compute(userId: string): Promise<HealthScore> {
+  async compute(
+    userId: string,
+    preloaded?: {
+      monthly?: any[];
+      netWorth?: any;
+      portfolioAlloc?: any[];
+      goalProgress?: number;
+      liabilities?: any[];
+    }
+  ): Promise<HealthScore> {
     const USE_FIREBASE = process.env.USE_FIREBASE === "true";
     let liabilities: any[] = [];
 
-    if (USE_FIREBASE) {
+    if (preloaded?.liabilities) {
+      liabilities = preloaded.liabilities;
+    } else if (USE_FIREBASE) {
       try {
         const { getCollection } = await import("../lib/firebase");
         const db = getCollection("liabilities");
@@ -40,12 +51,12 @@ export const HealthScoreService = {
       liabilities = await prisma.liability.findMany({ where: { userId } });
     }
 
-    // Fetch all other dimensions — each service has its own try/catch
+    // Fetch all other dimensions — use preloaded if provided
     const [monthly, netWorth, portfolioAlloc, goalProgress] = await Promise.all([
-      TransactionService.summarizeByMonth(userId, 3),
-      NetWorthService.getCurrent(userId),
-      PortfolioService.getAllocation(userId),
-      GoalService.getAvgProgress(userId),
+      preloaded?.monthly ?? TransactionService.summarizeByMonth(userId, 3),
+      preloaded?.netWorth ?? NetWorthService.getCurrent(userId),
+      preloaded?.portfolioAlloc ?? PortfolioService.getAllocation(userId),
+      preloaded?.goalProgress !== undefined ? Promise.resolve(preloaded.goalProgress) : GoalService.getAvgProgress(userId),
     ]);
 
     // --- Dimension 1: Savings Rate ---
@@ -55,7 +66,10 @@ export const HealthScoreService = {
     const savingsScore = savingsRatePct > 20 ? 2 : savingsRatePct >= 10 ? 1 : 0;
 
     // --- Dimension 2: Debt-to-Income ---
-    const monthlyEMI = liabilities.reduce((s: number, l: any) => s + (l.monthlyEMI ?? 0), 0);
+    const monthlyEMI = liabilities.reduce((s: number, l: any) => {
+      const emi = l.monthlyEMI?.toNumber ? l.monthlyEMI.toNumber() : Number(l.monthlyEMI ?? 0);
+      return s + emi;
+    }, 0);
     const dtiPct = avgIncome > 0 ? (monthlyEMI / avgIncome) * 100 : 0;
     const dtiScore = dtiPct < 30 ? 2 : dtiPct <= 50 ? 1 : 0;
 

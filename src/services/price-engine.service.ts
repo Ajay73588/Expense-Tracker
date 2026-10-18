@@ -1,161 +1,150 @@
 import { cache, cacheKey } from "../lib/cache";
+import { envInt, mapPool } from "../lib/http";
 import { createLogger } from "../lib/logger";
+import type { MarketDataProvider, MutualFundPriceProvider, StockQuoteRequest } from "./market/market-data.provider";
+import { createYahooProvider } from "./market/yahoo.provider";
+import { createMfApiProvider } from "./market/mfapi.provider";
 
 const log = createLogger("PriceEngineService");
 
-export interface PriceResult {
-  symbol: string;
+/**
+ * Price orchestration: cache lookup → ONE batched provider call per market → cache → result.
+ * No mock/random prices exist in this module. A failed lookup is reported, never papered over:
+ * callers keep the last stored price and surface the failure.
+ *
+ *   Portfolio → PriceEngineService → MarketDataProvider (Yahoo) | MutualFundPriceProvider (mfapi.in)
+ */
+export type PriceSource = "YAHOO" | "MFAPI";
+
+export interface PriceTarget {
+  id: string;
+  type: string; // STOCK | MUTUAL_FUND | CRYPTO | …
+  name: string;
+  symbol: string | null;
+  isin: string | null;
+  exchange: string | null;
+  currency: string; // INR | USD
+  /** NAV/price implied by the broker statement (used only to disambiguate MF schemes). */
+  statementPrice?: number | null;
+}
+
+export interface PriceUpdate {
   price: number;
   currency: string;
-  fetchedAt: Date;
-  stale: boolean;
-  source: string;
+  source: PriceSource;
+  asOf: string | null; // ISO
+  symbol: string | null;
+  exchange: string | null;
+}
+export interface PriceFailure { reason: string; message: string }
+export interface RefreshResult {
+  updates: Map<string, PriceUpdate>;
+  failures: Map<string, PriceFailure>;
+  /** Targets deliberately not priced (crypto, real estate, cash): no provider exists. */
+  unsupported: string[];
 }
 
-/**
- * Unified price engine. Abstracts over NSE, BSE, MF API, CoinGecko.
- *
- * CURRENT STATE: all providers are MOCKED — they return deterministic pseudo-random
- * prices seeded by the symbol, drifted by the current day. This keeps the UI populated
- * with plausible prices without requiring real API keys.
- *
- * TODO (production):
- *   - Stock: hit NSE/BSE quote endpoints (yahoo-finance2 is a common adapter).
- *   - Mutual fund: use mfapi.in (free, NAV daily).
- *   - Crypto: use CoinGecko /simple/price.
- *   - Wrap each with a circuit breaker + retry policy.
- *   - Persist last known price to DB for "stale" fallback when all providers fail.
- */
-
-// Deterministic hash so the "current price" is stable within a day but drifts day to day.
-function hash(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return Math.abs(h);
+export interface PriceResult {
+  symbol: string; price: number; currency: string; fetchedAt: Date; stale: boolean; source: string;
 }
 
-function mockPrice(symbol: string, basePrice: number): number {
-  const dayKey = new Date().toISOString().slice(0, 10);
-  const seed = hash(symbol + dayKey);
-  // ±8% drift from base
-  const drift = ((seed % 1600) / 10000 - 0.08) * basePrice;
-  return Math.max(0.01, basePrice + drift);
-}
+let stockProvider: MarketDataProvider = createYahooProvider();
+let mfProvider: MutualFundPriceProvider = createMfApiProvider();
 
-const CRYPTO_BASES: Record<string, number> = {
-  BTC: 5800000,
-  ETH: 340000,
-  SOL: 18000,
-  MATIC: 75,
-  DOGE: 12,
-};
-
-const STOCK_BASES: Record<string, number> = {
-  RELIANCE: 2950,
-  TCS: 4150,
-  INFY: 1820,
-  HDFCBANK: 1680,
-  ICICIBANK: 1240,
-  ITC: 465,
-  SBIN: 820,
-  WIPRO: 560,
-};
-
-async function fetchStock(symbol: string): Promise<PriceResult> {
-  const base = STOCK_BASES[symbol.toUpperCase()] ?? 1500;
-  return {
-    symbol,
-    price: Math.round(mockPrice(symbol, base) * 100) / 100,
-    currency: "INR",
-    fetchedAt: new Date(),
-    stale: false,
-    source: "MOCK_NSE",
-  };
-}
-
-async function fetchMF(symbol: string): Promise<PriceResult> {
-  // MFs have smaller daily swings; base NAVs in realistic range.
-  const base = 150 + (hash(symbol) % 450);
-  return {
-    symbol,
-    price: Math.round(mockPrice(symbol, base) * 100) / 100,
-    currency: "INR",
-    fetchedAt: new Date(),
-    stale: false,
-    source: "MOCK_MFAPI",
-  };
-}
-
-async function fetchCrypto(symbol: string): Promise<PriceResult> {
-  const base = CRYPTO_BASES[symbol.toUpperCase()] ?? 1000;
-  return {
-    symbol,
-    price: Math.round(mockPrice(symbol, base) * 100) / 100,
-    currency: "INR",
-    fetchedAt: new Date(),
-    stale: false,
-    source: "MOCK_COINGECKO",
-  };
-}
+const stockTtl = () => envInt("STOCK_PRICE_TTL_SECONDS", 300);
+const navTtl = () => envInt("MF_NAV_TTL_SECONDS", 6 * 3600);
 
 export const PriceEngineService = {
-  async fetch(
-    assetType: string,
-    symbol: string,
-    opts: { cacheTtl?: number } = {}
-  ): Promise<PriceResult> {
-    const key = cacheKey("price", assetType, symbol);
-    const cached = await cache.get<PriceResult>(key);
-    if (cached) return cached;
-
-    let result: PriceResult;
-    try {
-      if (assetType === "STOCK") result = await fetchStock(symbol);
-      else if (assetType === "MUTUAL_FUND") result = await fetchMF(symbol);
-      else if (assetType === "CRYPTO") result = await fetchCrypto(symbol);
-      else {
-        // Real estate / cash — no external price feed.
-        result = {
-          symbol,
-          price: 0,
-          currency: "INR",
-          fetchedAt: new Date(),
-          stale: false,
-          source: "NONE",
-        };
-      }
-    } catch (err) {
-      log.warn("price fetch failed, returning stale", {
-        symbol,
-        error: err instanceof Error ? err.message : "unknown",
-      });
-      result = {
-        symbol,
-        price: 0,
-        currency: "INR",
-        fetchedAt: new Date(),
-        stale: true,
-        source: "FALLBACK",
-      };
-    }
-
-    const ttl = opts.cacheTtl ?? (assetType === "CRYPTO" ? 300 : 900);
-    await cache.set(key, result, ttl);
-    return result;
+  /** Test seam / provider swap point. */
+  setProviders(p: { stock?: MarketDataProvider; mf?: MutualFundPriceProvider }) {
+    if (p.stock) stockProvider = p.stock;
+    if (p.mf) mfProvider = p.mf;
   },
 
-  async refreshForAssets(
-    assets: { id: string; type: string; symbol: string | null }[]
-  ): Promise<Map<string, number>> {
-    const out = new Map<string, number>();
-    for (const a of assets) {
-      if (!a.symbol) continue;
-      const res = await PriceEngineService.fetch(a.type, a.symbol);
-      if (res.price > 0) out.set(a.id, res.price);
+  async refresh(targets: PriceTarget[]): Promise<RefreshResult> {
+    const updates = new Map<string, PriceUpdate>();
+    const failures = new Map<string, PriceFailure>();
+    const unsupported: string[] = [];
+
+    // ── stocks: group by market, dedupe by security, cache, then one batch per market ────────
+    type Group = { req: StockQuoteRequest; ids: string[]; cKey: string };
+    const groups: Record<"IN" | "US", Map<string, Group>> = { IN: new Map(), US: new Map() };
+    const mfs: PriceTarget[] = [];
+
+    for (const t of targets) {
+      if (t.type === "STOCK") {
+        const market = t.currency === "USD" ? "US" : "IN";
+        const ident = t.symbol ?? t.isin;
+        if (!ident) { failures.set(t.id, { reason: "NOT_FOUND", message: "No ticker or ISIN available" }); continue; }
+        const key = `${market}:${ident.toUpperCase()}`;
+        const g = groups[market].get(key);
+        if (g) g.ids.push(t.id);
+        else groups[market].set(key, {
+          ids: [t.id],
+          cKey: cacheKey("price", "stock", key),
+          req: { key, symbol: t.symbol, isin: t.isin, exchange: t.exchange },
+        });
+      } else if (t.type === "MUTUAL_FUND") mfs.push(t);
+      else unsupported.push(t.id);
     }
-    return out;
+
+    for (const market of ["IN", "US"] as const) {
+      const misses: Group[] = [];
+      for (const g of groups[market].values()) {
+        const hit = await cache.get<PriceUpdate>(g.cKey);
+        if (hit) g.ids.forEach((id) => updates.set(id, hit));
+        else misses.push(g);
+      }
+      if (!misses.length) continue;
+      let outcomes;
+      try {
+        const reqs = misses.map((g) => g.req);
+        outcomes = market === "IN" ? await stockProvider.getIndianStockQuotes(reqs) : await stockProvider.getUSStockQuotes(reqs);
+      } catch (err) {
+        for (const g of misses) g.ids.forEach((id) => failures.set(id, { reason: "PROVIDER_ERROR", message: err instanceof Error ? err.message : "Provider failure" }));
+        continue;
+      }
+      for (const g of misses) {
+        const o = outcomes.get(g.req.key);
+        if (o?.ok) {
+          const u: PriceUpdate = {
+            price: o.quote.price, currency: o.quote.currency, source: "YAHOO",
+            asOf: o.quote.asOf?.toISOString() ?? null, symbol: o.quote.symbol, exchange: o.quote.exchange,
+          };
+          await cache.set(g.cKey, u, stockTtl());
+          g.ids.forEach((id) => updates.set(id, u));
+        } else {
+          const f = o ? { reason: o.reason, message: o.message } : { reason: "NOT_FOUND", message: "No result from provider" };
+          g.ids.forEach((id) => failures.set(id, f));
+        }
+      }
+    }
+
+    // ── mutual funds: per-scheme lookups, small concurrency, cached ─────────────────────────
+    await mapPool(mfs, 4, async (t) => {
+      const ck = cacheKey("price", "mf", (t.isin ?? t.name).toUpperCase(), t.name.toUpperCase());
+      const hit = await cache.get<PriceUpdate>(ck);
+      if (hit) { updates.set(t.id, hit); return; }
+      const o = await mfProvider.getLatestNav({ name: t.name, isin: t.isin, statementNav: t.statementPrice ?? null });
+      if (o.ok) {
+        const u: PriceUpdate = { price: o.nav, currency: "INR", source: "MFAPI", asOf: o.asOf?.toISOString() ?? null, symbol: o.schemeCode, exchange: null };
+        await cache.set(ck, u, navTtl());
+        updates.set(t.id, u);
+      } else failures.set(t.id, { reason: o.reason, message: o.message });
+    });
+
+    log.info("price.refresh", { requested: targets.length, updated: updates.size, failed: failures.size, unsupported: unsupported.length });
+    return { updates, failures, unsupported };
+  },
+
+  /** Compatibility wrapper for single manual-asset creation (AssetService.create). */
+  async fetch(assetType: string, symbol: string, opts: { currency?: string } = {}): Promise<PriceResult> {
+    const r = await PriceEngineService.refresh([
+      { id: "single", type: assetType, name: symbol, symbol, isin: null, exchange: null, currency: opts.currency ?? "INR" },
+    ]);
+    const u = r.updates.get("single");
+    return u
+      ? { symbol, price: u.price, currency: u.currency, fetchedAt: new Date(), stale: false, source: u.source }
+      : { symbol, price: 0, currency: opts.currency ?? "INR", fetchedAt: new Date(), stale: true, source: "UNAVAILABLE" };
   },
 };

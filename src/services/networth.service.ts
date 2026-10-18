@@ -1,9 +1,10 @@
 import { AssetService } from "./asset.service";
 import type { NetWorthSummary } from "../types";
 import { safeJsonParse } from "../utils/format";
-import { cache } from "react";
+import { safeCache as cache } from "../lib/safe-cache";
 import { getCollection, createDoc, updateDoc } from "../lib/firebase";
 import { createLogger } from "../lib/logger";
+import { Prisma } from "@prisma/client";
 
 const log = createLogger("NetWorthService");
 const USE_FIREBASE = process.env.USE_FIREBASE === "true";
@@ -62,13 +63,15 @@ export const NetWorthService = {
       ]);
     }
 
-    const totalAssets = assets.reduce((s: number, a: any) => s + a.currentValue, 0);
-    const totalLiabilities = liabilities.reduce((s: number, l: any) => s + l.outstandingAmount, 0);
-    const netWorth = totalAssets - totalLiabilities;
+    const totalAssetsDec = assets.reduce((s: Prisma.Decimal, a: any) => s.plus(a.currentValue), new Prisma.Decimal(0));
+    const totalLiabilitiesDec = liabilities.reduce((s: Prisma.Decimal, l: any) => s.plus(l.outstandingAmount), new Prisma.Decimal(0));
+    const totalAssets = totalAssetsDec.toNumber();
+    const totalLiabilities = totalLiabilitiesDec.toNumber();
+    const netWorth = totalAssetsDec.minus(totalLiabilitiesDec).toNumber();
 
     const breakdown: Record<string, number> = {};
-    for (const a of assets) breakdown[a.type] = (breakdown[a.type] ?? 0) + a.currentValue;
-    for (const l of liabilities) breakdown[l.type] = (breakdown[l.type] ?? 0) - l.outstandingAmount;
+    for (const a of assets) breakdown[a.type] = new Prisma.Decimal(breakdown[a.type] ?? 0).plus(a.currentValue).toNumber();
+    for (const l of liabilities) breakdown[l.type] = new Prisma.Decimal(breakdown[l.type] ?? 0).minus(l.outstandingAmount).toNumber();
 
     const history = snapshots.map((s: any) => ({
       date: s.date.toISOString().slice(0, 10),
@@ -126,8 +129,8 @@ export const NetWorthService = {
     return snapshots.map((s: any) => ({
       date: s.date.toISOString().slice(0, 10),
       netWorth: s.netWorth,
-      totalAssets: s.totalAssets,
-      totalLiabilities: s.totalLiabilities,
+      totalAssets: new Prisma.Decimal(s.totalAssets).toNumber(),
+      totalLiabilities: new Prisma.Decimal(s.totalLiabilities).toNumber(),
       breakdown: safeJsonParse<Record<string, number>>(s.breakdown, {}),
     }));
   },

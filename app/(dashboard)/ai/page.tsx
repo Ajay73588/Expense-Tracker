@@ -7,6 +7,9 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   source?: "ai" | "fallback";
+  fallbackReason?: string;
+  model?: string;
+  isDailyQuota?: boolean;
 }
 
 const QUICK_ACTIONS = [
@@ -64,6 +67,7 @@ export default function AIPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [engineStatus, setEngineStatus] = useState<"checking" | "nvidia" | "gemini" | "fallback">("checking");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -71,7 +75,6 @@ export default function AIPage() {
   }, [messages]);
 
   async function send(opts: { action?: string; message?: string }) {
-    const userMsg = opts.message ?? opts.action?.replace(/_/g, " ") ?? "";
     const action = opts.action ?? "CUSTOM_CHAT";
 
     const newMessages: Message[] = [
@@ -96,8 +99,20 @@ export default function AIPage() {
       if (json.ok) {
         setMessages([
           ...newMessages,
-          { role: "assistant", content: json.data.response, source: json.data.source },
+          {
+            role: "assistant",
+            content: json.data.response,
+            source: json.data.source,
+            fallbackReason: json.data.fallbackReason,
+            model: json.data.model,
+            isDailyQuota: json.data.isDailyQuota,
+          },
         ]);
+        if (json.data.source === "ai") {
+          setEngineStatus("nvidia");
+        } else if (json.data.source === "fallback") {
+          setEngineStatus("fallback");
+        }
       } else {
         setMessages([...newMessages, { role: "assistant", content: "Sorry, something went wrong. Please try again." }]);
       }
@@ -122,9 +137,20 @@ export default function AIPage() {
           <h1 className="text-2xl font-bold text-white">AI Advisor</h1>
           <p className="text-sm text-gray-500 mt-1">Powered by financial context from your portfolio.</p>
         </div>
-        <div className="flex items-center gap-2 text-xs text-gray-500 bg-bg-card border border-bg-border rounded-lg px-3 py-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-positive animate-pulse inline-block"></span>
-          Rule-based engine active
+        <div className="flex items-center gap-2 text-xs text-gray-400 bg-bg-card border border-bg-border rounded-lg px-3 py-1.5">
+          <span
+            className={cn(
+              "w-2 h-2 rounded-full inline-block",
+              engineStatus === "nvidia" || engineStatus === "gemini" ? "bg-emerald-400 animate-pulse" : "bg-amber-400"
+            )}
+          />
+          <span className="font-medium">
+            {engineStatus === "nvidia" || engineStatus === "gemini"
+              ? "NVIDIA NIM Active"
+              : engineStatus === "fallback"
+              ? "Rule Engine Fallback Active"
+              : "AI Ready"}
+          </span>
         </div>
       </div>
 
@@ -169,10 +195,56 @@ export default function AIPage() {
             >
               {msg.role === "assistant" ? (
                 <div className="ai-prose space-y-0.5">
-                  {renderMarkdown(msg.content)}
                   {msg.source === "fallback" && (
-                    <p className="text-[10px] text-gray-600 mt-2 pt-2 border-t border-bg-border">
-                      Rule-based response · Set MINIMAX_API_KEY for full AI
+                    <div className="mb-3 p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-200 text-xs">
+                      <div className="flex items-center gap-1.5 font-semibold text-amber-300">
+                        <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                        <span>
+                          {msg.fallbackReason === "RATE_LIMIT" || msg.isDailyQuota
+                            ? "AI Provider Quota Exhausted"
+                            : msg.fallbackReason === "SERVICE_UNAVAILABLE"
+                            ? "AI Provider Temporarily Unavailable (503)"
+                            : msg.fallbackReason === "TIMEOUT"
+                            ? "AI Request Timed Out"
+                            : msg.fallbackReason === "AUTH_ERROR"
+                            ? "NVIDIA NIM Unauthorized / Key Invalid"
+                            : msg.fallbackReason === "NOT_CONFIGURED"
+                            ? "AI Provider Not Configured"
+                            : "Deterministic Engine Active"}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-amber-200/80 mt-1 leading-snug">
+                        {msg.fallbackReason === "RATE_LIMIT" || msg.isDailyQuota
+                          ? "NVIDIA NIM API rate limit reached. Switched immediately to local rule engine (AI bypassed)."
+                          : msg.fallbackReason === "SERVICE_UNAVAILABLE"
+                          ? "NVIDIA NIM service is temporarily overloaded. Returned local rule-based financial advice."
+                          : msg.fallbackReason === "AUTH_ERROR"
+                          ? "NVIDIA NIM API credentials invalid or unauthorized. Switched to local rule engine."
+                          : "Live AI is unavailable. This response was generated locally and does not use NVIDIA NIM."}
+                      </p>
+                    </div>
+                  )}
+
+                  {renderMarkdown(msg.content)}
+
+                  {msg.source === "ai" && (
+                    <p className="text-[10px] text-gray-500 mt-2 pt-2 border-t border-bg-border flex items-center justify-between">
+                      <span className="text-emerald-400 flex items-center gap-1 font-medium">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block animate-pulse" />
+                        Live NVIDIA NIM ({msg.model ? msg.model.replace("nvidia/", "") : "Nemotron"})
+                      </span>
+                      <span className="text-emerald-400/80 text-[10px] font-medium">Live AI response</span>
+                    </p>
+                  )}
+                  {msg.source === "fallback" && (
+                    <p className="text-[10px] text-gray-500 mt-2 pt-2 border-t border-bg-border flex items-center justify-between">
+                      <span className="text-amber-400/90 font-medium flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
+                        Rule Engine Fallback
+                      </span>
+                      <span className="text-gray-400 text-[10px]">
+                        {msg.fallbackReason ? `Reason: ${msg.fallbackReason} (AI bypassed)` : "AI bypassed"}
+                      </span>
                     </p>
                   )}
                 </div>
