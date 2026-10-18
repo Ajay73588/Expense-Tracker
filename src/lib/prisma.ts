@@ -21,9 +21,20 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClientSingleton | undefined;
 };
 
-const internalPrisma = globalForPrisma.prisma ?? prismaClientSingleton();
+let internalPrisma: PrismaClientSingleton | undefined;
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = internalPrisma;
+function getPrismaClient(): PrismaClientSingleton {
+  if (USE_FIREBASE) {
+    return null as any;
+  }
+  if (!internalPrisma) {
+    internalPrisma = globalForPrisma.prisma ?? prismaClientSingleton();
+    if (process.env.NODE_ENV !== "production") {
+      globalForPrisma.prisma = internalPrisma;
+    }
+  }
+  return internalPrisma;
+}
 
 /**
  * STRICT MODE GUARD:
@@ -35,6 +46,7 @@ export const prisma = new Proxy({} as any, {
     if (USE_FIREBASE) {
       throw new Error(`[FATAL] Prisma usage blocked in Firebase mode. Attempted to access property: ${String(prop)}`);
     }
-    return (internalPrisma as any)[prop];
+    const client = getPrismaClient();
+    return (client as any)[prop];
   },
 });
