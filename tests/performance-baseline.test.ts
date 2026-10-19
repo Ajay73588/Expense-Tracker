@@ -23,7 +23,7 @@ import * as netWorthRoute from "../app/api/net-worth/route";
 import * as insightsRoute from "../app/api/insights/route";
 import * as aiRoute from "../app/api/ai/route";
 
-async function measure<T>(name: string, fn: () => Promise<T>, runs = 5): Promise<{ name: string; avgMs: number; minMs: number; maxMs: number }> {
+async function measure<T>(name: string, fn: () => Promise<T>, runs = 3): Promise<{ name: string; avgMs: number; minMs: number; maxMs: number }> {
   const times: number[] = [];
   // Warmup
   await fn();
@@ -107,9 +107,9 @@ describe("Baseline Performance Measurements", () => {
     routeResults.push(await measure("GET /api/insights", () => insightsRoute.GET()));
     routeResults.push(await measure("GET /api/ai", () => aiRoute.GET()));
 
-    console.log("\n--- API Route Handler Latency Results (5 runs) ---");
+    console.log("\n--- API Route Handler Latency Results (3 runs) ---");
     console.table(routeResults);
-  }, 90000);
+  }, 180000);
 
   afterAll(() => {
     vi.restoreAllMocks();

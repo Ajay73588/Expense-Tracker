@@ -82,7 +82,7 @@ export class AccountLifecycleService {
         allocationTargets: allocationTargets.count,
         conversations: conversations.count,
       };
-    });
+    }, { maxWait: 15000, timeout: 30000 });
 
     log.info("Successfully purged user database records", {
       userId,

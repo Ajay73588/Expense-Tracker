@@ -20,6 +20,8 @@
     "@clerk/nextjs": "^6.11.0",
     "@e965/xlsx": "^0.20.3",
     "@google/generative-ai": "^0.24.1",
+    "@neon/config": "^1.9.2",
+    "@neon/env": "^1.6.3",
     "@prisma/client": "^5.22.0",
     "@prisma/extension-accelerate": "^3.0.1",
     "clsx": "^2.1.1",
